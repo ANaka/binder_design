@@ -2,7 +2,7 @@ import os
 import argparse
 import subprocess
 import logging
-
+from typing import Dict
 from modal import Image, App, method, enter
 
 app = App("colabfold")
@@ -40,26 +40,28 @@ class LocalColabFold:
         os.environ["PATH"] = "/localcolabfold/colabfold-conda/bin:" + os.environ["PATH"]
 
     @method()
-    def fold(self, name: str, sequence: str, num_recycles: int = 1, **kwargs):
+    def fold(self, sequences: Dict[str, str], **kwargs):
         input_fp = "/tmp/input.fasta"
         out_dir = "output"
         os.makedirs(out_dir, exist_ok=True)
         
-        
-        # Write name and sequence to a fasta file
+        # Write all sequences to a single fasta file
         with open(input_fp, "w") as f:
-            f.write(f">{name}\n{sequence}")
+            for name, sequence in sequences.items():
+                f.write(f">{name}\n{sequence}\n")
         
-        cmd = [
-            "colabfold_batch",
-            "--num-recycle", str(num_recycles),
-            "--model-type", "alphafold2_multimer_v3",
-            "--zip",
-        ]
+        cmd = ["colabfold_batch"]
         
-        # Add additional kwargs to the command
+        # Handle arguments
         for key, value in kwargs.items():
-            cmd.extend([f"--{key.replace('_', '-')}", str(value)])
+            key = key.replace('_', '-')
+            if isinstance(value, bool):
+                # Handle flags
+                if value:
+                    cmd.append(f"--{key}")
+            elif value is not None:
+                # Handle value arguments
+                cmd.extend([f"--{key}", str(value)])
         
         cmd.extend([input_fp, out_dir])
         
@@ -84,6 +86,46 @@ class LocalColabFold:
             raise FileNotFoundError(f"No zip file found in {out_dir}")
 
 @app.function()
-def main(name: str, sequence: str, num_recycles: int = 1):
+def main(
+    sequences: Dict[str, str],
+    num_recycles: int = 1,
+    model_type: str = "alphafold2_multimer_v3",
+    num_models: int = 5,
+    max_msa: str = None,
+    use_templates: bool = False,
+    amber: bool = False,
+    use_gpu_relax: bool = False,
+    zip_results: bool = True,
+    msa_mode: str = "mmseqs2_uniref_env",
+    recycle_early_stop_tolerance: float = None,
+    num_ensemble: int = 1,
+    use_dropout: bool = False,
+    relax_max_iterations: int = 2000,
+    relax_tolerance: float = 2.39,
+    relax_stiffness: float = 10.0,
+    relax_max_outer_iterations: int = 3,
+    rank: str = "auto",
+    **kwargs
+):
     lcf = LocalColabFold()
-    return lcf.fold.remote(name, sequence, num_recycles)
+    return lcf.fold.remote(
+        sequences=sequences,
+        num_recycles=num_recycles,
+        model_type=model_type,
+        num_models=num_models,
+        max_msa=max_msa,
+        templates=use_templates,
+        amber=amber,
+        use_gpu_relax=use_gpu_relax,
+        zip=zip_results,
+        msa_mode=msa_mode,
+        recycle_early_stop_tolerance=recycle_early_stop_tolerance,
+        num_ensemble=num_ensemble,
+        use_dropout=use_dropout,
+        relax_max_iterations=relax_max_iterations,
+        relax_tolerance=relax_tolerance,
+        relax_stiffness=relax_stiffness,
+        relax_max_outer_iterations=relax_max_outer_iterations,
+        rank=rank,
+        **kwargs
+    )
