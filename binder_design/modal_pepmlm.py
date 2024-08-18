@@ -158,10 +158,27 @@ class PepMLM:
         logger.info(f"Execution time: {execution_time:.2f} seconds")
         
         return pseudo_perplexity
+    
+    def _compute_ppl_unmasked(self, target_seq, binder_seq):
+        '''
+        Computes pseudo-perplexity without masking each residue.
+        '''
+        sequence = target_seq + binder_seq
+        tensor_input = self.tokenizer.encode(sequence, return_tensors='pt').to(self.device)
+        labels = torch.full(tensor_input.shape, -100).to(self.device)
+        labels[0, -len(binder_seq):] = tensor_input[0, -len(binder_seq):]  # Set labels for binder tokens
+
+        with torch.no_grad():
+            outputs = self.model(tensor_input, labels=labels)
+            total_loss = outputs.loss.item()
+
+        # Calculate pseudo perplexity
+        pseudo_perplexity = np.exp(total_loss / len(binder_seq))
+        return pseudo_perplexity
         
     @method()
     def compute_pseudo_perplexity(self, target_seq, binder_seq):
-        return self._compute_ppl_vectorized(target_seq, binder_seq)
+        return self._compute_ppl_unmasked(target_seq, binder_seq)
         
     def generate_peptide_for_single_sequence(self, protein_seq, peptide_length=15, top_k=3, num_binders=4):
         from torch.distributions.categorical import Categorical
@@ -198,7 +215,7 @@ class PepMLM:
             logger.info(f"Generated binder: {generated_binder}")
 
             # Compute PPL for the generated binder
-            ppl_value = self._compute_ppl_vectorized(protein_seq, generated_binder)
+            ppl_value = self._compute_ppl_unmasked(protein_seq, generated_binder)
 
             # Add the generated binder and its PPL to the results list
             binders_with_ppl.append([generated_binder, ppl_value])
@@ -246,7 +263,7 @@ class PepMLM:
             num_residues_to_mask = max(1, int(binder_length * frac_residues_to_mask))
             
             # Calculate perplexity for the original binder sequence
-            original_ppl = self._compute_ppl_vectorized(target_seq, binder_seq)
+            original_ppl = self._compute_ppl_unmasked(target_seq, binder_seq)
             
             mutated_binders = [{
                 'target_seq': target_seq,
@@ -291,7 +308,7 @@ class PepMLM:
                 mutated_binder = ''.join(mutated_binder).replace(' ', '')
                 
                 # Compute PPL for the mutated binder
-                ppl_value = self._compute_ppl_vectorized(target_seq, mutated_binder)
+                ppl_value = self._compute_ppl_unmasked(target_seq, mutated_binder)
                 
                 mutated_binders.append({
                     'target_seq': target_seq,
