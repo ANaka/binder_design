@@ -4,12 +4,14 @@ import tempfile
 import shutil
 import subprocess
 import logging
-from binder_design import TEMPLATE_A3M_PATH
+from binder_design import TEMPLATE_A3M_PATH, EGFS, EGFR
 from modal import Image, App, method, enter, Dict
+from binder_design.utils import get_mutation_diff, hash_seq
 import io
 import zipfile
 import re
 import json
+from datetime import datetime
 
 app = App("colabfold")
 
@@ -158,14 +160,13 @@ class LocalColabFold:
                 logging.info(f"Found zip file: {zip_path}")
                 
                 # Extract metrics and PDBs here
-                all_results, pdbs = self.extract_metrics_and_pdbs(zip_path, out_dir)
+                all_results = self.extract_metrics_and_pdbs(zip_path, out_dir)
                 
-                logging.info(f"Extracted {len(all_results)} results and {len(pdbs)} PDB files")
+                logging.info(f"Extracted {len(all_results)} results")
                 
                 return {
                     'zip_content': open(zip_path, 'rb').read(),
                     'results': all_results,
-                    'pdbs': pdbs
                 }
             except StopIteration:
                 logging.error(f"No zip file found in {out_dir}")
@@ -270,6 +271,8 @@ class LocalColabFold:
                         'binder_pae': score['binder_pae'],
                         'pae_interaction': score['pae_interaction'],
                         'ptm': score['ptm'],
+                        'seq_id': hash_seq(sequences['binder']),
+                        'mut_str': get_mutation_diff(sequences['binder'], EGFS),
                     }
                     all_results.append(result)
                     
@@ -277,18 +280,15 @@ class LocalColabFold:
                     pdb_files = [name for name in zip_ref.namelist() if name.endswith('.pdb') and seq_name in name and f"rank_{score['model_number']:03d}" in name]
                     for pdb_filename in pdb_files:
                         with zip_ref.open(pdb_filename) as pdb_file:
-                            pdb_content = pdb_file.read()
-                            pdb_output_path = os.path.join(output_dir, pdb_filename)
-                            with open(pdb_output_path, 'wb') as f:
-                                f.write(pdb_content)
-                            pdbs[f"{seq_name}_model_{score['model_number']}"] = pdb_output_path
+                            pdb_content = pdb_file.read().decode('utf-8')
+                            pdbs[f"{seq_name}_model_{score['model_number']}"] = pdb_content
                     
-                    logging.info(f"Saved PDB file: {pdb_output_path}")
+                    logging.info(f"Extracted PDB content for {seq_name}_model_{score['model_number']}")
                     
-                    result['pdb_path'] = pdb_output_path
+                    result['pdb_content'] = pdb_content
         
         logging.info(f"Extracted {len(all_results)} total results and {len(pdbs)} PDB files")
-        return all_results, pdbs
+        return all_results
         
 
     
@@ -309,10 +309,9 @@ def fold_and_extract(
     )
     return result['results']
 
-@app.function(timeout=4800)
+@app.function(timeout=12800)
 def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEMPLATE_A3M_PATH, target_sequence: str = None, batch_size: int = 10, **kwargs):
     all_results = []
-    all_pdbs = {}
     
     # Prepare batches
     batches = []
@@ -326,7 +325,8 @@ def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEM
         all_results.extend(result)
     
     return all_results
-
+    
+    
 @app.local_entrypoint()
 def test():
     # Test sequence-based folding
@@ -334,23 +334,22 @@ def test():
         'binder': 'NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW',
         'target': 'EGFR_SEQUENCE_HERE'
     }
-    results_seq = fold_sequences.remote(sequences=sequences)
+    results_seq = fold_and_extract.remote(sequences=sequences)
 
     # Test a3m-based folding with provided target sequence
     template_a3m_path = TEMPLATE_A3M_PATH
     binder_sequences = {
-        "binder1": "NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW",
-        "binder2": "NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRXX"
+        "binder1": EGFS,
     }
-    target_sequence = "EGFR_SEQUENCE_HERE"
-    results_a3m_with_target = fold_a3m.remote(
+    target_sequence = EGFR
+    results_a3m_with_target =  fold_and_extract.remote(
         template_a3m_path=template_a3m_path,
         binder_sequences=binder_sequences,
         target_sequence=target_sequence
     )
 
     # Test a3m-based folding without provided target sequence
-    results_a3m_without_target = fold_a3m.remote(
+    results_a3m_without_target = fold_and_extract.remote(
         template_a3m_path=template_a3m_path,
         binder_sequences=binder_sequences
     )
