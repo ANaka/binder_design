@@ -13,6 +13,7 @@ numpy = "^2.0.1"
 seaborn = "^0.13.2"
 pandas = "^2.2.2"
 biopython = "^1.84"
+python-dotenv = "^1.0.1"
 
 
 [build-system]
