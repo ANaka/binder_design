@@ -92,7 +92,7 @@ with image.imports():
     import pandas as pd
     
 
-@app.cls(image=image, gpu='a100', timeout=2400, concurrency_limit=20,)
+@app.cls(image=image, gpu='a100', timeout=9600, concurrency_limit=20,)
 class LocalColabFold:
     @enter()
     def setup(self):
@@ -291,100 +291,6 @@ class LocalColabFold:
         return all_results, pdbs
         
 
-@app.function(timeout=4800, gpu='a100')
-def fold_sequences(
-    sequences,
-    num_recycle: int = 1,
-    model_type: str = "alphafold2_multimer_v3",
-    zip_results: bool = True,
-    msa_mode: str = "mmseqs2_uniref_env",
-    num_models: int = 3,
-    max_msa: str = None,
-    use_templates: bool = False,
-    amber: bool = False,
-    use_gpu_relax: bool = False,
-    recycle_early_stop_tolerance: float = None,
-    num_ensemble: int = 1,
-    use_dropout: bool = False,
-    relax_max_iterations: int = 2000,
-    relax_tolerance: float = 2.39,
-    relax_stiffness: float = 10.0,
-    relax_max_outer_iterations: int = 3,
-    rank: str = "auto",
-    **kwargs
-):
-    lcf = LocalColabFold()
-    return lcf.fold.remote(
-        sequences=sequences,
-        num_recycle=num_recycle,
-        model_type=model_type,
-        zip=zip_results,
-        msa_mode=msa_mode,
-        num_models=num_models,
-        max_msa=max_msa,
-        templates=use_templates,
-        amber=amber,
-        use_gpu_relax=use_gpu_relax,
-        recycle_early_stop_tolerance=recycle_early_stop_tolerance,
-        num_ensemble=num_ensemble,
-        use_dropout=use_dropout,
-        relax_max_iterations=relax_max_iterations,
-        relax_tolerance=relax_tolerance,
-        relax_stiffness=relax_stiffness,
-        relax_max_outer_iterations=relax_max_outer_iterations,
-        rank=rank,
-        **kwargs
-    )
-
-@app.function(timeout=4800, gpu='a100',)
-def fold_a3m(
-    binder_sequences: dict,
-    template_a3m_path: str = TEMPLATE_A3M_PATH,
-    target_sequence: str = None,
-    num_recycle: int = 1,
-    model_type: str = "alphafold2_multimer_v3",
-    zip_results: bool = True,
-    # msa_mode: str = "mmseqs2_uniref_env",
-    num_models: int = 2,
-    # max_msa: str = None,
-    # use_templates: bool = False,
-    # amber: bool = False,
-    # use_gpu_relax: bool = False,
-    # recycle_early_stop_tolerance: float = None,
-    # num_ensemble: int = 1,
-    # use_dropout: bool = False,
-    # relax_max_iterations: int = 2000,
-    # relax_tolerance: float = 2.39,
-    # relax_stiffness: float = 10.0,
-    # relax_max_outer_iterations: int = 3,
-    # rank: str = "auto",
-    # **kwargs
-):
-    
-    lcf = LocalColabFold()
-    return lcf.fold.remote(
-        binder_sequences=binder_sequences,
-        template_a3m_path=template_a3m_path,
-        target_sequence=target_sequence,
-        num_recycle=num_recycle,
-        model_type=model_type,
-        zip=zip_results,
-        # msa_mode=msa_mode,
-        num_models=num_models,
-        # max_msa=max_msa,
-        # templates=use_templates,
-        # amber=amber,
-        # use_gpu_relax=use_gpu_relax,
-        # recycle_early_stop_tolerance=recycle_early_stop_tolerance,
-        # num_ensemble=num_ensemble,
-        # use_dropout=use_dropout,
-        # relax_max_iterations=relax_max_iterations,
-        # relax_tolerance=relax_tolerance,
-        # relax_stiffness=relax_stiffness,
-        # relax_max_outer_iterations=relax_max_outer_iterations,
-        # rank=rank,
-        # **kwargs
-    )
     
 @app.function(timeout=4800)
 def fold_and_extract(
@@ -404,7 +310,7 @@ def fold_and_extract(
     return result['results']
 
 @app.function(timeout=4800)
-def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEMPLATE_A3M_PATH, target_sequence: str = None, batch_size: int = 10, output_dir: str = 'output', **kwargs):
+def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEMPLATE_A3M_PATH, target_sequence: str = None, batch_size: int = 10, **kwargs):
     all_results = []
     all_pdbs = {}
     
@@ -412,7 +318,7 @@ def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEM
     batches = []
     for i in range(0, len(binder_sequences), batch_size):
         batch = dict(list(binder_sequences.items())[i:i+batch_size])
-        batches.append((batch, template_a3m_path, target_sequence, output_dir))
+        batches.append((batch, template_a3m_path, target_sequence))
 
 
     all_results = []
