@@ -3,7 +3,8 @@ import os
 from modal import App, Secret, gpu, Image, enter, method
 import logging
 from datetime import datetime
-from binder_design import DATA_DIR
+from binder_design import DATA_DIR, EGFS, EGFR
+from binder_design.utils import get_mutation_diff
 import time
 
 # Configure logging
@@ -305,29 +306,8 @@ class PepMLM:
         result['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return result
         
-EGFS = 'NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW'
-EGFR = 'LEEKKVCQGTSNKLTQLGTFEDHFLSLQRMFNNCEVVLGNLEITYVQRNYDLSFLKTIQEVAGYVLIALNTVERIPLENLQIIRGNMYYENSYALAVLSNYDANKTGLKELPMRNLQEILHGAVRFSNNPALCNVESIQWRDIVSSDFLSNMSMDFQNHLGSCQKCDPSCPNGSCWGAGEENCQKLTKIICAQQCSGRCRGKSPSDCCHNQCAAGCTGPRESDCLVCRKFRDEATCKDTCPPLMLYNPTTYQMDVNPEGKYSFGATCVKKCPRNYVVTDHGSCVRACGADSYEMEEDGVRKCKKCEGPCRKVCNGIGIGEFKDSLSINATNIKHFKNCTSISGDLHILPVAFRGDSFTHTPPLDPQELDILKTVKEITGFLLIQAWPENRTDLHAFENLEIIRGRTKQHGQFSLAVVSLNITSLGLRSLKEISDGDVIISGNKNLCYANTINWKKLFGTSGQKTKIISNRGENSCKATGQVCHALCSPEGCWGPEPRDCVSCRNVSRGRECVDKCKLLEGEPREFVENSECIQCHPECLPQAMNITCTGRGPDNCIQCAHYIDGPHCVKTCPAGVMGENNTLVWKYADAGHVCHLCHPNCTYGCTGPGLRGCPTNGHHHHHH'
 
-def get_mutation_diff(seq1, seq2):
-    """
-    Compare two sequences and return a string of mutations.
-    
-    Args:
-    seq1 (str): The original sequence
-    seq2 (str): The mutated sequence
-    
-    Returns:
-    str: A comma-separated string of mutations in the format {original_aa}{position}{new_aa}
-    """
-    if len(seq1) != len(seq2):
-        raise ValueError("Sequences must be of equal length")
-    
-    mutations = []
-    for i, (aa1, aa2) in enumerate(zip(seq1, seq2)):
-        if aa1 != aa2:
-            mutations.append(f"{aa1}{i+1}{aa2}")
-    
-    return ",".join(mutations)
+
 
 @app.local_entrypoint()
 def test():
@@ -421,12 +401,12 @@ def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_ma
 def evolve_binders(
     init_binder_seqs=None, 
     target_seq=EGFR, 
-    frac_residues_to_mask=0.075, 
+    frac_residues_to_mask=0.05, 
     top_k=8, 
-    num_variations_per_binder=50, 
+    num_variations_per_binder=30, 
     min_n_binder_seqs=20,
-    n_generations=20,
-    n_survivors=100,
+    n_generations=40,
+    n_survivors=50,
 ):
     if init_binder_seqs is None:
         init_binder_seqs = [EGFS]
