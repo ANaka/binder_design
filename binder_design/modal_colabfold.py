@@ -4,7 +4,7 @@ import tempfile
 import shutil
 import subprocess
 import logging
-from binder_design import TEMPLATE_A3M_PATH, EGFS, EGFR
+from binder_design import TEMPLATE_A3M_PATH, EGFS, EGFR, COLABFOLD_GPU_CONCURRENCY_LIMIT
 from modal import Image, App, method, enter, Dict
 from binder_design.utils import get_mutation_diff, hash_seq
 import io
@@ -94,7 +94,7 @@ with image.imports():
     import pandas as pd
     
 
-@app.cls(image=image, gpu='a100', timeout=9600, concurrency_limit=20,)
+@app.cls(image=image, gpu='a100', timeout=9600, concurrency_limit=COLABFOLD_GPU_CONCURRENCY_LIMIT,)
 class LocalColabFold:
     @enter()
     def setup(self):
@@ -272,7 +272,7 @@ class LocalColabFold:
                         'pae_interaction': score['pae_interaction'],
                         'ptm': score['ptm'],
                         'seq_id': hash_seq(sequences['binder']),
-                        'mut_str': get_mutation_diff(sequences['binder'], EGFS),
+                        # 'mut_str': get_mutation_diff(sequences['binder'], EGFS),
                     }
                     all_results.append(result)
                     
