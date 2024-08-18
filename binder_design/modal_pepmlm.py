@@ -54,7 +54,7 @@ with image.imports():
     container_idle_timeout=150,
     image=image,
     secrets=[Secret.from_dotenv()],
-    gpu="a100",
+    gpu="a10g",
     concurrency_limit=20,
     timeout=9600,
 )
@@ -269,7 +269,7 @@ class PepMLM:
                 'target_seq': target_seq,
                 'parent_binder': binder_seq,
                 'binder': binder_seq,
-                'ppl': original_ppl,
+                'unmasked_ppl': original_ppl,
                 'mask_positions': '',
                 'mutation': ''
             }]
@@ -314,7 +314,7 @@ class PepMLM:
                     'target_seq': target_seq,
                     'parent_binder': binder_seq,
                     'binder': mutated_binder,
-                    'ppl': ppl_value,
+                    'unmasked_ppl': ppl_value,
                     'mask_positions': ','.join(map(str, mask_positions)),
                     'mutation': get_mutation_diff(binder_seq, mutated_binder)
                 })
@@ -370,7 +370,7 @@ def test_egfs_edit():
         'target_seq': [target_seq],
         'parent_binder': [binder_seq],
         'binder': [binder_seq],
-        'ppl': [original_ppl],
+        'unmasked_ppl': [original_ppl],
         'mask_positions': [''],
         'mutation': ['']
     })
@@ -422,9 +422,9 @@ def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_ma
 def evolve_binders(
     init_binder_seqs=None, 
     target_seq=EGFR, 
-    frac_residues_to_mask=0.05, 
+    frac_residues_to_mask=0.025, 
     top_k=8, 
-    num_variations_per_binder=30, 
+    num_variations_per_binder=100, 
     min_n_binder_seqs=20,
     n_generations=40,
     n_survivors=50,
@@ -447,7 +447,7 @@ def evolve_binders(
         results = parallel_edit_binders.remote(current_generation, target_seq, frac_residues_to_mask, top_k, num_variations_per_binder)
         
         # Sort the results by perplexity (lower is better)
-        sorted_results = results.sort_values(by='ppl')
+        sorted_results = results.sort_values(by='unmasked_ppl')
         
         # Select the top n_survivors as the next generation
         next_generation = sorted_results['binder'].head(n_survivors).tolist()
@@ -460,9 +460,9 @@ def evolve_binders(
         
         # Print some stats about this generation
         print(f"Generation {generation + 1} stats:")
-        print(f"  Best PPL: {sorted_results['ppl'].min()}")
-        print(f"  Median PPL: {sorted_results['ppl'].median()}")
-        print(f"  Worst PPL: {sorted_results['ppl'].max()}")
+        print(f"  Best PPL: {sorted_results['unmasked_ppl'].min()}")
+        print(f"  Median PPL: {sorted_results['unmasked_ppl'].median()}")
+        print(f"  Worst PPL: {sorted_results['unmasked_ppl'].max()}")
         
         # Update current_generation for the next iteration
         current_generation = next_generation
