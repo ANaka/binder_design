@@ -421,7 +421,7 @@ def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_ma
 def evolve_binders(
     init_binder_seqs=None, 
     target_seq=EGFR, 
-    frac_residues_to_mask=0.05, 
+    frac_residues_to_mask=0.075, 
     top_k=8, 
     num_variations_per_binder=10, 
     min_n_binder_seqs=20,
