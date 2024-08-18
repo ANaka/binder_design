@@ -25,9 +25,11 @@ def download_models():
     
 image = (
     Image
-    .debian_slim()
+    .debian_slim(python_version="3.10")
     .pip_install('uv')
-    .run_commands("uv pip install  --system --compile-bytecode torch transformers==4.28 huggingface_hub pandas tqdm peft python-dotenv")
+    .pip_install('Bio')
+    .pip_install('transformers')
+    .run_commands("uv pip install  --system --compile-bytecode torch huggingface_hub pandas tqdm datasets", gpu="a10g")
     .run_function(download_models, secrets=[Secret.from_dotenv()])
     )
 
@@ -40,29 +42,33 @@ with image.imports():
     import pandas
     import tqdm
     import peft
-    from torch.distributions.categorical import Categorical
+    
     import numpy as np
     import pandas as pd
+    
   
 @app.cls(
     container_idle_timeout=200,
     image=image,
     secrets=[Secret.from_dotenv()],
+    gpu="a10g",
 )
 class PepMLM:
 
     @enter()
     def enter(self):
+        from transformers import AutoTokenizer, AutoModelForMaskedLM
         logger.info("Initializing PepMLM")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {self.device}")
         logger.info("Loading model and tokenizer")
-        self.model = transformers.AutoModelForCausalLM.from_pretrained("ChatterjeeLab/PepMLM-650M").to(self.device)
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained("ChatterjeeLab/PepMLM-650M").to(self.device)
+        self.tokenizer = AutoTokenizer.from_pretrained("ChatterjeeLab/PepMLM-650M")
+        self.model = AutoModelForMaskedLM.from_pretrained("ChatterjeeLab/PepMLM-650M", token=os.environ["HUGGINGFACE_TOKEN"]).to(self.device)
+        
         logger.info("Model and tokenizer loaded successfully")
         
-    @method()
-    def compute_pseudo_perplexity(self, target_seq, binder_seq):
+    def _compute_ppl(self, target_seq, binder_seq):
+        import numpy as np
         '''
         For alternative computation of PPL (in batch/matrix format), please check our github repo:
         https://github.com/programmablebio/pepmlm/blob/main/scripts/generation.py
@@ -96,7 +102,12 @@ class PepMLM:
         logger.info(f"Computed pseudo-perplexity: {pseudo_perplexity}")
         return pseudo_perplexity
         
+    @method()
+    def compute_pseudo_perplexity(self, target_seq, binder_seq):
+        return self._compute_ppl(target_seq, binder_seq)
+        
     def generate_peptide_for_single_sequence(self, protein_seq, peptide_length=15, top_k=3, num_binders=4):
+        from torch.distributions.categorical import Categorical
         logger.info(f"Generating peptides for sequence: {protein_seq[:10]}...")
         peptide_length = int(peptide_length)
         top_k = int(top_k)
@@ -126,7 +137,7 @@ class PepMLM:
             logger.info(f"Generated binder: {generated_binder}")
 
             # Compute PPL for the generated binder
-            ppl_value = self.compute_pseudo_perplexity(protein_seq, generated_binder)
+            ppl_value = self._compute_ppl(protein_seq, generated_binder)
 
             # Add the generated binder and its PPL to the results list
             binders_with_ppl.append([generated_binder, ppl_value])
@@ -136,6 +147,7 @@ class PepMLM:
 
     @method()
     def generate_peptide(self, input_seqs, peptide_length=15, top_k=3, num_binders=4):
+        import pandas as pd
         logger.info("Starting peptide generation")
         if isinstance(input_seqs, str):  # Single sequence
             logger.info("Processing single sequence")
