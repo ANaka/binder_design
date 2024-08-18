@@ -167,7 +167,7 @@ def fold_sequences(
         **kwargs
     )
 
-@app.function()
+@app.function(timeout=4800, gpu='a100',)
 def fold_a3m(
     binder_sequences: dict,
     template_a3m_path: str = TEMPLATE_A3M_PATH,
