@@ -51,7 +51,7 @@ with image.imports():
     container_idle_timeout=200,
     image=image,
     secrets=[Secret.from_dotenv()],
-    gpu="a10g",
+    gpu="a100",
 )
 class PepMLM:
 
@@ -73,7 +73,7 @@ class PepMLM:
         For alternative computation of PPL (in batch/matrix format), please check our github repo:
         https://github.com/programmablebio/pepmlm/blob/main/scripts/generation.py
         '''
-        logger.info(f"Computing pseudo-perplexity for target sequence: {target_seq[:10]}... and binder sequence: {binder_seq}")
+        logger.debug(f"Computing pseudo-perplexity for target sequence: {target_seq[:10]}... and binder sequence: {binder_seq}")
         sequence = target_seq + binder_seq
         tensor_input = self.tokenizer.encode(sequence, return_tensors='pt').to(self.device)
         total_loss = 0
@@ -99,7 +99,7 @@ class PepMLM:
 
         # Calculate pseudo perplexity
         pseudo_perplexity = np.exp(avg_loss)
-        logger.info(f"Computed pseudo-perplexity: {pseudo_perplexity}")
+        logger.debug(f"Computed pseudo-perplexity: {pseudo_perplexity}")
         return pseudo_perplexity
         
     @method()
@@ -167,8 +167,89 @@ class PepMLM:
             result = pd.DataFrame(results, columns=['Input Sequence', 'Binder', 'Pseudo Perplexity'])
             logger.info("Peptide generation completed for all sequences")
             return result
+        
+    @method()
+    def edit_binder(self, target_seq, binder_seq, frac_residues_to_mask=0.1, top_k=3, num_variations=10):
+        from torch.distributions.categorical import Categorical
+        import numpy as np
+        import pandas as pd
+        logger.info(f"Mutating binder: {binder_seq}")
+        binder_length = len(binder_seq)
+        num_residues_to_mask = max(1, int(binder_length * frac_residues_to_mask))
+        
+        mutated_binders = []
+        for _ in range(num_variations):
+            # Randomly select positions to mask
+            mask_positions = np.random.choice(binder_length, num_residues_to_mask, replace=False)
+            
+            # Create masked binder sequence
+            masked_binder = list(binder_seq)
+            for pos in mask_positions:
+                masked_binder[pos] = self.tokenizer.mask_token
+            masked_binder = ''.join(masked_binder)
+            
+            # Prepare input for the model
+            input_sequence = target_seq + masked_binder
+            inputs = self.tokenizer(input_sequence, return_tensors="pt").to(self.device)
+            
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
+            
+            # Get logits for masked positions
+            mask_token_indices = (inputs["input_ids"] == self.tokenizer.mask_token_id).nonzero(as_tuple=True)[1]
+            logits_at_masks = logits[0, mask_token_indices]
+            
+            # Apply top-k sampling
+            top_k_logits, top_k_indices = logits_at_masks.topk(top_k, dim=-1)
+            probabilities = torch.nn.functional.softmax(top_k_logits, dim=-1)
+            predicted_indices = Categorical(probabilities).sample()
+            predicted_token_ids = top_k_indices.gather(-1, predicted_indices.unsqueeze(-1)).squeeze(-1)
+            
+            # Replace masked tokens with predicted ones
+            mutated_binder = list(binder_seq)
+            for pos, token_id in zip(mask_positions, predicted_token_ids):
+                mutated_binder[pos] = self.tokenizer.convert_ids_to_tokens([token_id])[0]
+            mutated_binder = ''.join(mutated_binder).replace(' ', '')
+            
+            # Compute PPL for the mutated binder
+            ppl_value = self._compute_ppl(target_seq, mutated_binder)
+            
+            mutated_binders.append({
+                'target_seq': target_seq,
+                'parent_binder': binder_seq,
+                'binder': mutated_binder,
+                'ppl': ppl_value,
+                'mask_positions': ','.join(map(str, mask_positions)),
+                'mutation': get_mutation_diff(binder_seq, mutated_binder)
+            })
+        
+        logger.info(f"Generated {num_variations} mutations for the binder")
+        result = pd.DataFrame(mutated_binders)
+        return result
+        
+EGFS = 'NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW'
+EGFR = 'LEEKKVCQGTSNKLTQLGTFEDHFLSLQRMFNNCEVVLGNLEITYVQRNYDLSFLKTIQEVAGYVLIALNTVERIPLENLQIIRGNMYYENSYALAVLSNYDANKTGLKELPMRNLQEILHGAVRFSNNPALCNVESIQWRDIVSSDFLSNMSMDFQNHLGSCQKCDPSCPNGSCWGAGEENCQKLTKIICAQQCSGRCRGKSPSDCCHNQCAAGCTGPRESDCLVCRKFRDEATCKDTCPPLMLYNPTTYQMDVNPEGKYSFGATCVKKCPRNYVVTDHGSCVRACGADSYEMEEDGVRKCKKCEGPCRKVCNGIGIGEFKDSLSINATNIKHFKNCTSISGDLHILPVAFRGDSFTHTPPLDPQELDILKTVKEITGFLLIQAWPENRTDLHAFENLEIIRGRTKQHGQFSLAVVSLNITSLGLRSLKEISDGDVIISGNKNLCYANTINWKKLFGTSGQKTKIISNRGENSCKATGQVCHALCSPEGCWGPEPRDCVSCRNVSRGRECVDKCKLLEGEPREFVENSECIQCHPECLPQAMNITCTGRGPDNCIQCAHYIDGPHCVKTCPAGVMGENNTLVWKYADAGHVCHLCHPNCTYGCTGPGLRGCPTNGHHHHHH'
 
-
+def get_mutation_diff(seq1, seq2):
+    """
+    Compare two sequences and return a string of mutations.
+    
+    Args:
+    seq1 (str): The original sequence
+    seq2 (str): The mutated sequence
+    
+    Returns:
+    str: A comma-separated string of mutations in the format {original_aa}{position}{new_aa}
+    """
+    if len(seq1) != len(seq2):
+        raise ValueError("Sequences must be of equal length")
+    
+    mutations = []
+    for i, (aa1, aa2) in enumerate(zip(seq1, seq2)):
+        if aa1 != aa2:
+            mutations.append(f"{aa1}{i+1}{aa2}")
+    
+    return ",".join(mutations)
 
 @app.local_entrypoint()
 def test():
@@ -186,3 +267,38 @@ def test():
     single_result = pepmlm.generate_peptide.remote(single_seq, peptide_length=15, top_k=3, num_binders=2)
     print("\nGenerated peptides for single sequence:")
     print(single_result)
+
+    # Test edit_binder
+    target_seq = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
+    binder_seq = "ACDEFGHIKLMNPQRS"
+    mutated_binders = pepmlm.edit_binder.remote(target_seq, binder_seq, frac_residues_to_mask=0.1, top_k=3, num_variations=10)
+    print("\nMutated binders:")
+    print(mutated_binders)
+    
+@app.local_entrypoint()
+def test_egfs_edit():
+    import pandas as pd
+    pepmlm = PepMLM()
+    target_seq = EGFR
+    binder_seq = EGFS
+    mutated_binders = pepmlm.edit_binder.remote(target_seq, binder_seq, frac_residues_to_mask=0.15, top_k=5, num_variations=20)
+    
+    # Calculate perplexity for the original binder sequence
+    original_ppl = pepmlm.compute_pseudo_perplexity.remote(target_seq, binder_seq)
+    
+    # Add the original binder and its perplexity to the DataFrame
+    original_binder = pd.DataFrame({
+        'target_seq': [target_seq],
+        'parent_binder': [binder_seq],
+        'binder': [binder_seq],
+        'ppl': [original_ppl],
+        'mask_positions': [''],
+        'mutation': ['']
+    })
+    
+    # Concatenate the original binder with the mutated binders
+    mutated_binders = pd.concat([original_binder, mutated_binders], ignore_index=True)
+    
+    mutated_binders = mutated_binders.sort_values(by='ppl')
+    print("\nMutated binders:")
+    print(mutated_binders)
