@@ -417,7 +417,7 @@ def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_ma
     
     return sorted_results
 
-@app.local_entrypoint(timeout=12800)
+@app.local_entrypoint()
 def evolve_binders(
     init_binder_seqs=None, 
     target_seq=EGFR, 
