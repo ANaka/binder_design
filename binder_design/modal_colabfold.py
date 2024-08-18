@@ -8,11 +8,8 @@ from binder_design import TEMPLATE_A3M_PATH
 from modal import Image, App, method, enter, Dict
 import io
 import zipfile
-from Bio import PDB
 import re
 import json
-import numpy as np
-import pandas as pd
 
 app = App("colabfold")
 
@@ -37,6 +34,8 @@ image = (
     # )
     .run_commands('wget https://raw.githubusercontent.com/YoshitakaMo/localcolabfold/main/install_colabbatch_linux.sh')
     .run_commands('bash install_colabbatch_linux.sh', gpu="a100",)
+    .pip_install('biopython')
+    .pip_install('pandas')
     # .pip_install("grpclib")
     # .run_commands('export PATH="/localcolabfold/colabfold-conda/bin:$PATH"')
 )
@@ -81,119 +80,34 @@ aa_dict = {
 def three_to_one(three_letter_code):
     return aa_dict.get(three_letter_code, 'X')
 
-def extract_sequence_from_pdb(pdb_content):
-    parser = PDB.PDBParser()
-    structure = parser.get_structure("protein", io.StringIO(pdb_content.decode('utf-8')))
-    
-    sequences = {'A': '', 'B': ''}
-    for model in structure:
-        for chain in model:
-            chain_id = chain.id
-            if chain_id in sequences:
-                for residue in chain:
-                    if PDB.is_aa(residue):
-                        sequences[chain_id] += three_to_one(residue.resname)
-    
-    return {
-        'binder': sequences['A'],
-        'target': sequences['B'],
-        'binder_length': len(sequences['A']),
-        'target_length': len(sequences['B']),
-    }
 
-def extract_sequences(zip_ref, seq_name):
-    pdb_file = next(name for name in zip_ref.namelist() if name.startswith(seq_name) and name.endswith('.pdb'))
-    with zip_ref.open(pdb_file) as file:
-        pdb_content = file.read()
-        sequences = extract_sequence_from_pdb(pdb_content)
-    return sequences
 
-def extract_scores(zip_ref, seq_name, binder_length):
-    pattern = r'model_(\d+)'
-    score_jsons = [name for name in zip_ref.namelist() if seq_name in name and '_scores_' in name]
-    
-    results = []
-    for json_file in score_jsons:
-        match = re.search(pattern, json_file)
-        if match:
-            model_number = int(match.group(1))
-            
-        with zip_ref.open(json_file) as file:
-            data = json.load(file)
-            
-            plddt_array = np.array(data['plddt'])
-            pae_array = np.array(data['pae'])
-            
-            pae_interaction = (pae_array[binder_length:, :binder_length].mean() + pae_array[:binder_length, binder_length:].mean()) / 2
-            binder_plddt = plddt_array[:binder_length].mean()
-            binder_pae = pae_array[:binder_length, :binder_length].mean()
-            
-            result = {
-                'model_number': model_number,
-                'binder_plddt': float(binder_plddt),
-                'binder_pae': float(binder_pae),
-                'pae_interaction': float(pae_interaction),
-                'ptm': data['ptm'],
-            }
-        results.append(result)
-    
-    return results
 
-def extract_metrics_and_pdbs(results, output_dir):
-    all_results = []
-    pdbs = {}
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    with zipfile.ZipFile(io.BytesIO(results)) as zip_ref:
-        pdb_files = [name for name in zip_ref.namelist() if name.endswith('.pdb')]
-        seq_names = list(set([n.split('_unrelaxed_rank')[0] for n in pdb_files]))
-        
-        for seq_name in seq_names:
-            sequences = extract_sequences(zip_ref, seq_name)
-            binder_length = sequences['binder_length']
-            target_length = sequences['target_length']
-            
-            scores = extract_scores(zip_ref, seq_name, binder_length)
-            
-            for score in scores:
-                result = {
-                    'seq_name': seq_name,
-                    'binder_sequence': sequences['binder'],
-                    'target_sequence': sequences['target'],
-                    'binder_length': binder_length,
-                    'target_length': target_length,
-                    'model_number': score['model_number'],
-                    'binder_plddt': score['binder_plddt'],
-                    'binder_pae': score['binder_pae'],
-                    'pae_interaction': score['pae_interaction'],
-                    'ptm': score['ptm'],
-                }
-                all_results.append(result)
-                
-                # Extract and save PDB file
-                pdb_filename = f"{seq_name}_unrelaxed_rank_{score['model_number']:03d}.pdb"
-                with zip_ref.open(pdb_filename) as pdb_file:
-                    pdb_content = pdb_file.read()
-                    pdb_output_path = os.path.join(output_dir, pdb_filename)
-                    with open(pdb_output_path, 'wb') as f:
-                        f.write(pdb_content)
-                    pdbs[f"{seq_name}_model_{score['model_number']}"] = pdb_output_path
-                
-                result['pdb_path'] = pdb_output_path
-    
-    return all_results, pdbs
 
-@app.cls(image=image, gpu='a100', timeout=2400)
+
+
+with image.imports():
+    from Bio import PDB
+    import numpy as np
+    import pandas as pd
+    
+
+@app.cls(image=image, gpu='a100', timeout=2400, concurrency_limit=20,)
 class LocalColabFold:
     @enter()
     def setup(self):
+        from Bio import PDB
+        import numpy as np
+        import pandas as pd
+        
         # Set up the environment when the container starts
         os.environ["PATH"] = "/localcolabfold/colabfold-conda/bin:" + os.environ["PATH"]
 
     @method()
     def fold(self, sequences=None, binder_sequences=None, template_a3m_path=None, target_sequence=None, **kwargs):
         with tempfile.TemporaryDirectory() as temp_dir:
+            logging.info(f"Created temporary directory: {temp_dir}")
+            
             if template_a3m_path is None:
                 # Sequence-based approach
                 input_file = os.path.join(temp_dir, "input.fasta")
@@ -201,6 +115,7 @@ class LocalColabFold:
                     for name, seq in sequences.items():
                         f.write(f">{name}\n{seq}\n")
                 input_path = input_file
+                logging.info(f"Created input FASTA file: {input_file}")
             else:
                 # A3M-based approach
                 input_path = generate_a3m_files(
@@ -209,9 +124,11 @@ class LocalColabFold:
                     template_a3m_path=template_a3m_path,
                     target_sequence=target_sequence
                 )
+                logging.info(f"Generated A3M files in: {input_path}")
 
-            out_dir = os.path.join(temp_dir, "output")
+            out_dir = "output"
             os.makedirs(out_dir, exist_ok=True)
+            logging.info(f"Created output directory: {out_dir}")
 
             cmd = ["colabfold_batch", input_path, out_dir]
             
@@ -237,14 +154,144 @@ class LocalColabFold:
             # Find and return the zip result
             try:
                 zip_file = next(f for f in os.listdir(out_dir) if f.endswith(".zip"))
-                with open(os.path.join(out_dir, zip_file), "rb") as g:
-                    return g.read()
+                zip_path = os.path.join(out_dir, zip_file)
+                logging.info(f"Found zip file: {zip_path}")
+                
+                # Extract metrics and PDBs here
+                all_results, pdbs = self.extract_metrics_and_pdbs(zip_path, out_dir)
+                
+                logging.info(f"Extracted {len(all_results)} results and {len(pdbs)} PDB files")
+                
+                return {
+                    'zip_content': open(zip_path, 'rb').read(),
+                    'results': all_results,
+                    'pdbs': pdbs
+                }
             except StopIteration:
                 logging.error(f"No zip file found in {out_dir}")
                 logging.error(f"Directory contents: {os.listdir(out_dir)}")
                 raise FileNotFoundError(f"No zip file found in {out_dir}")
+            
+    @staticmethod
+    def extract_sequence_from_pdb(pdb_content):
+        parser = PDB.PDBParser()
+        structure = parser.get_structure("protein", io.StringIO(pdb_content.decode('utf-8')))
+        
+        sequences = {'A': '', 'B': ''}
+        for model in structure:
+            for chain in model:
+                chain_id = chain.id
+                if chain_id in sequences:
+                    for residue in chain:
+                        if PDB.is_aa(residue):
+                            sequences[chain_id] += three_to_one(residue.resname)
+        
+        return {
+            'binder': sequences['A'],
+            'target': sequences['B'],
+            'binder_length': len(sequences['A']),
+            'target_length': len(sequences['B']),
+        }
+        
+    @staticmethod
+    def extract_sequences(zip_ref, seq_name):
+        pdb_file = next(name for name in zip_ref.namelist() if name.startswith(seq_name) and name.endswith('.pdb'))
+        with zip_ref.open(pdb_file) as file:
+            pdb_content = file.read()
+            sequences = LocalColabFold.extract_sequence_from_pdb(pdb_content)
+        return sequences
+    
+    @staticmethod
+    def extract_scores(zip_ref, seq_name, binder_length):
+        pattern = r'model_(\d+)'
+        score_jsons = [name for name in zip_ref.namelist() if seq_name in name and '_scores_' in name]
+        
+        results = []
+        for json_file in score_jsons:
+            match = re.search(pattern, json_file)
+            if match:
+                model_number = int(match.group(1))
+                
+            with zip_ref.open(json_file) as file:
+                data = json.load(file)
+                
+                plddt_array = np.array(data['plddt'])
+                pae_array = np.array(data['pae'])
+                
+                pae_interaction = (pae_array[binder_length:, :binder_length].mean() + pae_array[:binder_length, binder_length:].mean()) / 2
+                binder_plddt = plddt_array[:binder_length].mean()
+                binder_pae = pae_array[:binder_length, :binder_length].mean()
+                
+                result = {
+                    'model_number': model_number,
+                    'binder_plddt': float(binder_plddt),
+                    'binder_pae': float(binder_pae),
+                    'pae_interaction': float(pae_interaction),
+                    'ptm': data['ptm'],
+                }
+            results.append(result)
+        
+        return results
+    
+    @staticmethod
+    def extract_metrics_and_pdbs(zip_path, output_dir):
+        logging.info(f"Extracting metrics and PDBs from {zip_path}")
+        all_results = []
+        pdbs = {}
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            pdb_files = [name for name in zip_ref.namelist() if name.endswith('.pdb')]
+            seq_names = list(set([n.split('_unrelaxed_rank')[0] for n in pdb_files]))
+            
+            logging.info(f"Found {len(seq_names)} sequence names in the zip file")
+            
+            for seq_name in seq_names:
+                sequences = LocalColabFold.extract_sequences(zip_ref, seq_name)
+                binder_length = sequences['binder_length']
+                target_length = sequences['target_length']
+                
+                logging.info(f"Extracted sequences for {seq_name}: binder length {binder_length}, target length {target_length}")
+                
+                scores = LocalColabFold.extract_scores(zip_ref, seq_name, binder_length)
+                
+                logging.info(f"Extracted {len(scores)} scores for {seq_name}")
+                
+                for score in scores:
+                    result = {
+                        'seq_name': seq_name,
+                        'binder_sequence': sequences['binder'],
+                        'target_sequence': sequences['target'],
+                        'binder_length': binder_length,
+                        'target_length': target_length,
+                        'model_number': score['model_number'],
+                        'binder_plddt': score['binder_plddt'],
+                        'binder_pae': score['binder_pae'],
+                        'pae_interaction': score['pae_interaction'],
+                        'ptm': score['ptm'],
+                    }
+                    all_results.append(result)
+                    
+                    # Find and extract PDB files
+                    pdb_files = [name for name in zip_ref.namelist() if name.endswith('.pdb') and seq_name in name and f"rank_{score['model_number']:03d}" in name]
+                    for pdb_filename in pdb_files:
+                        with zip_ref.open(pdb_filename) as pdb_file:
+                            pdb_content = pdb_file.read()
+                            pdb_output_path = os.path.join(output_dir, pdb_filename)
+                            with open(pdb_output_path, 'wb') as f:
+                                f.write(pdb_content)
+                            pdbs[f"{seq_name}_model_{score['model_number']}"] = pdb_output_path
+                    
+                    logging.info(f"Saved PDB file: {pdb_output_path}")
+                    
+                    result['pdb_path'] = pdb_output_path
+        
+        logging.info(f"Extracted {len(all_results)} total results and {len(pdbs)} PDB files")
+        return all_results, pdbs
+        
 
-@app.function()
+@app.function(timeout=4800, gpu='a100')
 def fold_sequences(
     sequences,
     num_recycle: int = 1,
@@ -298,7 +345,7 @@ def fold_a3m(
     model_type: str = "alphafold2_multimer_v3",
     zip_results: bool = True,
     # msa_mode: str = "mmseqs2_uniref_env",
-    # num_models: int = 3,
+    num_models: int = 2,
     # max_msa: str = None,
     # use_templates: bool = False,
     # amber: bool = False,
@@ -323,7 +370,7 @@ def fold_a3m(
         model_type=model_type,
         zip=zip_results,
         # msa_mode=msa_mode,
-        # num_models=num_models,
+        num_models=num_models,
         # max_msa=max_msa,
         # templates=use_templates,
         # amber=amber,
@@ -339,26 +386,40 @@ def fold_a3m(
         # **kwargs
     )
     
-def fold_and_extract(binder_sequences: dict, template_a3m_path: str, target_sequence: str = None, output_dir: str = 'output', **kwargs):
+@app.function(timeout=4800)
+def fold_and_extract(
+    binder_sequences: dict, 
+    template_a3m_path: str=TEMPLATE_A3M_PATH, 
+    target_sequence: str = None, 
+    zip_results: bool = True,
+    **kwargs):
     lcf = LocalColabFold()
-    results = lcf.fold.remote(
+    result = lcf.fold.remote(
         binder_sequences=binder_sequences,
         template_a3m_path=template_a3m_path,
         target_sequence=target_sequence,
+        zip=zip_results,
         **kwargs
     )
-    return extract_metrics_and_pdbs(results, output_dir)
+    return result['results']
 
-@app.function(timeout=4800, gpu='a100')
-def parallel_fold_and_extract(all_binder_sequences: Dict[str, str], template_a3m_path: str, target_sequence: str = None, batch_size: int = 10, output_dir: str = 'output', **kwargs):
+@app.function(timeout=4800)
+def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEMPLATE_A3M_PATH, target_sequence: str = None, batch_size: int = 10, output_dir: str = 'output', **kwargs):
     all_results = []
     all_pdbs = {}
-    for i in range(0, len(all_binder_sequences), batch_size):
-        batch = dict(list(all_binder_sequences.items())[i:i+batch_size])
-        batch_results, batch_pdbs = fold_and_extract.remote(batch, template_a3m_path, target_sequence, output_dir, **kwargs)
-        all_results.extend(batch_results)
-        all_pdbs.update(batch_pdbs)
-    return all_results, all_pdbs
+    
+    # Prepare batches
+    batches = []
+    for i in range(0, len(binder_sequences), batch_size):
+        batch = dict(list(binder_sequences.items())[i:i+batch_size])
+        batches.append((batch, template_a3m_path, target_sequence, output_dir))
+
+
+    all_results = []
+    for result in fold_and_extract.starmap(batches, kwargs=kwargs):
+        all_results.extend(result)
+    
+    return all_results
 
 @app.local_entrypoint()
 def test():
