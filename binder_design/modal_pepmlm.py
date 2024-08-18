@@ -184,6 +184,10 @@ class PepMLM:
             mask_token_indices = (inputs["input_ids"] == self.tokenizer.mask_token_id).nonzero(as_tuple=True)[1]
             logits_at_masks = logits[0, mask_token_indices]
 
+            # Restrict to allowed tokens
+            allowed_indices = torch.tensor(range(4, 24)).to(self.device)
+            logits_at_masks[:, torch.tensor([i for i in range(logits_at_masks.shape[1]) if i not in allowed_indices])] = float('-inf')
+
             # Apply top-k sampling
             top_k_logits, top_k_indices = logits_at_masks.topk(top_k, dim=-1)
             probabilities = torch.nn.functional.softmax(top_k_logits, dim=-1)
