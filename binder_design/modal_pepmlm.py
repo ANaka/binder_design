@@ -423,9 +423,9 @@ def evolve_binders(
     target_seq=EGFR, 
     frac_residues_to_mask=0.075, 
     top_k=8, 
-    num_variations_per_binder=10, 
+    num_variations_per_binder=50, 
     min_n_binder_seqs=20,
-    n_generations=10,
+    n_generations=20,
     n_survivors=100,
 ):
     if init_binder_seqs is None:
