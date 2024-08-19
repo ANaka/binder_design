@@ -5,7 +5,7 @@ from modal import App, Secret, gpu, Image, enter, method
 import modal
 import logging
 from datetime import datetime
-from binder_design import DATA_DIR, EGFS, EGFR, FOLD_RESULTS_DIR, PEPMLM_RESULTS_DIR, COLABFOLD_GPU_CONCURRENCY_LIMIT
+from binder_design import DATA_DIR, EGFS, EGFR, FOLD_RESULTS_DIR, PEPMLM_RESULTS_DIR, COLABFOLD_GPU_CONCURRENCY_LIMIT, TEMPLATE_A3M_PATH
 from binder_design.utils import get_mutation_diff, hash_seq
 import pandas as pd
 import re
@@ -56,27 +56,28 @@ def get_folded_ids():
 def evolve_binders(
     init_binder_seqs=None,
     init_from_folded:bool=True,
+    init_from_folded_top_k:int=5,
     target_seq=EGFR, 
     frac_residues_to_mask=0.05, 
     top_k=8, 
-    num_variations_per_binder=100, 
-    min_n_binder_seqs=20,
-    n_generations=3,
+    num_variations_per_binder=50, 
+    min_n_binder_seqs=10,
+    n_generations=4,
     n_pepmlm_survivors=50,
     pepmlm_top_k:int = 100,
     n_colabfold_survivors=20,
     select_from_all_folded:bool=True,
-    folded_top_k:int = 40,
+    folded_top_k:int = 20,
 ):
     from binder_design.utils import get_mutation_diff
     logger.info("Starting evolve_binders function")
     if init_from_folded:
         init_df = get_fold_results().drop_duplicates(subset=['seq_id']).sort_values(by='pae_interaction', ascending=True)
-        if folded_top_k is not None:
-            init_df = init_df.head(folded_top_k)
+        if init_from_folded_top_k is not None:
+            init_df = init_df.head(init_from_folded_top_k)
             # sample based on pae_interaction
             p = init_df['pae_interaction'].values / init_df['pae_interaction'].sum()
-            init_df = init_df.sample(n=n_pepmlm_survivors, replace=True, weights=p)
+            init_df = init_df.sample(n=min_n_binder_seqs, replace=True, weights=p)
         init_binder_seqs = init_df['binder_sequence'].tolist()
 
         
@@ -129,9 +130,26 @@ def evolve_binders(
             pepmlm_top_k = min(pepmlm_top_k, n_pepmlm_survivors)
             sorted_results = sorted_results.head(pepmlm_top_k).sample(n=n_pepmlm_survivors)
         seqs_to_fold = sorted_results.set_index('seq_id')['binder'].head(n_pepmlm_survivors).to_dict()
-        
+        # Sanitize sequence IDs to remove slashes
+        sanitized_seqs_to_fold = {}
+        for seq_id, seq in seqs_to_fold.items():
+            sanitized_id = str(seq_id).replace('/', '_')
+            sanitized_seqs_to_fold[sanitized_id] = seq
+        seqs_to_fold = sanitized_seqs_to_fold
+
+        logger.info("Sanitized sequence IDs to remove slashes")
+        for name, seq in seqs_to_fold.items():
+            logger.info(f"{name}: {seq}")
         logger.info(f"Folding {len(seqs_to_fold)} sequences")
-        fold_results = parallel_fold_and_extract.remote(binder_sequences=seqs_to_fold, num_models=1, batch_size=int(n_pepmlm_survivors / COLABFOLD_GPU_CONCURRENCY_LIMIT), num_recycle=1)
+        batch_size = int(n_pepmlm_survivors / COLABFOLD_GPU_CONCURRENCY_LIMIT)
+        batch_size = max(batch_size, 1)
+        fold_results = parallel_fold_and_extract.remote(
+            binder_sequences=seqs_to_fold,
+            template_a3m_path=None,
+            target_seq=None,
+            batch_size=batch_size,
+            num_models=1, 
+            num_recycle=1)
         
         fold_df = pd.DataFrame(fold_results)
         # fold_df['mut_str'] = fold_df['binder_sequence'].apply(get_mutation_diff, seq2=EGFS)
@@ -148,6 +166,17 @@ def evolve_binders(
         if select_from_all_folded:
             fold_df = pd.concat([fold_df, get_fold_results()])
         fold_df = fold_df.drop_duplicates(subset=['seq_id']).sort_values(by='pae_interaction', ascending=True)
+        
+        # Log statistics for pae_interaction
+        logger.info(f"  Best (lowest) PAE Interaction: {fold_df['pae_interaction'].min():.4f}")
+        
+        # Get the 2nd, 5th, and 10th best PAE Interactions
+        second_best_pae = fold_df['pae_interaction'].nsmallest(2).iloc[-1]
+        fifth_best_pae = fold_df['pae_interaction'].nsmallest(5).iloc[-1]
+        tenth_best_pae = fold_df['pae_interaction'].nsmallest(10).iloc[-1]
+        logger.info(f"  2nd Best PAE Interaction: {second_best_pae:.4f}")
+        logger.info(f"  5th Best PAE Interaction: {fifth_best_pae:.4f}")
+        logger.info(f"  10th Best PAE Interaction: {tenth_best_pae:.4f}")
         
         if folded_top_k is not None:
             fold_df = fold_df.head(folded_top_k)
