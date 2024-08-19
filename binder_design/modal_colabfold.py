@@ -4,7 +4,7 @@ import tempfile
 import shutil
 import subprocess
 import logging
-from binder_design import TEMPLATE_A3M_PATH, EGFS, EGFR
+from binder_design import TEMPLATE_A3M_PATH, EGFS, EGFR, COLABFOLD_GPU_CONCURRENCY_LIMIT, FOLD_RESULTS_DIR
 from modal import Image, App, method, enter, Dict
 from binder_design.utils import get_mutation_diff, hash_seq
 import io
@@ -12,6 +12,11 @@ import zipfile
 import re
 import json
 from datetime import datetime
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 app = App("colabfold")
 
@@ -94,7 +99,7 @@ with image.imports():
     import pandas as pd
     
 
-@app.cls(image=image, gpu='a100', timeout=9600, concurrency_limit=20,)
+@app.cls(image=image, gpu='a100', timeout=9600, concurrency_limit=COLABFOLD_GPU_CONCURRENCY_LIMIT)
 class LocalColabFold:
     @enter()
     def setup(self):
@@ -106,31 +111,22 @@ class LocalColabFold:
         os.environ["PATH"] = "/localcolabfold/colabfold-conda/bin:" + os.environ["PATH"]
 
     @method()
-    def fold(self, sequences=None, binder_sequences=None, template_a3m_path=None, target_sequence=None, **kwargs):
+    def fold(self, binder_sequences, template_a3m_path, target_sequence=None,  **kwargs):
         with tempfile.TemporaryDirectory() as temp_dir:
-            logging.info(f"Created temporary directory: {temp_dir}")
+            logger.info(f"Created temporary directory: {temp_dir}")
             
-            if template_a3m_path is None:
-                # Sequence-based approach
-                input_file = os.path.join(temp_dir, "input.fasta")
-                with open(input_file, 'w') as f:
-                    for name, seq in sequences.items():
-                        f.write(f">{name}\n{seq}\n")
-                input_path = input_file
-                logging.info(f"Created input FASTA file: {input_file}")
-            else:
-                # A3M-based approach
-                input_path = generate_a3m_files(
-                    binder_sequences=binder_sequences,
-                    output_folder=temp_dir,
-                    template_a3m_path=template_a3m_path,
-                    target_sequence=target_sequence
-                )
-                logging.info(f"Generated A3M files in: {input_path}")
+            # A3M-based approach
+            input_path = generate_a3m_files(
+                binder_sequences=binder_sequences,
+                output_folder=temp_dir,
+                template_a3m_path=template_a3m_path,
+                target_sequence=target_sequence
+            )
+            logger.info(f"Generated A3M files in: {input_path}")
 
             out_dir = "output"
             os.makedirs(out_dir, exist_ok=True)
-            logging.info(f"Created output directory: {out_dir}")
+            logger.info(f"Created output directory: {out_dir}")
 
             cmd = ["colabfold_batch", input_path, out_dir]
             
@@ -142,35 +138,43 @@ class LocalColabFold:
                         cmd.append(f"--{key}")
                 elif value is not None:
                     cmd.extend([f"--{key}", str(value)])
+                    
+            # hardcode zip
+            cmd.append('--zip')
             
-            logging.info(f"Running command: {' '.join(cmd)}")
+            logger.info(f"Running command: {' '.join(cmd)}")
             
             try:
                 result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logging.info(f"Command output: {result.stdout}")
+                logger.info(f"Command output: {result.stdout}")
             except subprocess.CalledProcessError as e:
-                logging.error(f"Command failed with error: {e}")
-                logging.error(f"Error output: {e.stderr}")
+                logger.error(f"Command failed with error: {e}")
+                logger.error(f"Error output: {e.stderr}")
                 raise
+            
+            logger.info(f'input directory contents: {os.listdir(input_path)}')
+            logger.info(f"Output directory contents: {os.listdir(out_dir)}")
+            logger.info(f'current directory contents: {os.listdir(".")}')
             
             # Find and return the zip result
             try:
                 zip_file = next(f for f in os.listdir(out_dir) if f.endswith(".zip"))
                 zip_path = os.path.join(out_dir, zip_file)
-                logging.info(f"Found zip file: {zip_path}")
+                logger.info(f"Found zip file: {zip_path}")
                 
                 # Extract metrics and PDBs here
                 all_results = self.extract_metrics_and_pdbs(zip_path, out_dir)
                 
-                logging.info(f"Extracted {len(all_results)} results")
+                logger.info(f"Extracted {len(all_results)} results")
                 
-                return {
-                    'zip_content': open(zip_path, 'rb').read(),
-                    'results': all_results,
-                }
+                # return {
+                #     'zip_content': open(zip_path, 'rb').read(),
+                #     'results': all_results,
+                # }
+                return all_results
             except StopIteration:
-                logging.error(f"No zip file found in {out_dir}")
-                logging.error(f"Directory contents: {os.listdir(out_dir)}")
+                logger.error(f"No zip file found in {out_dir}")
+                logger.error(f"Directory contents: {os.listdir(out_dir)}")
                 raise FileNotFoundError(f"No zip file found in {out_dir}")
             
     @staticmethod
@@ -236,7 +240,7 @@ class LocalColabFold:
     
     @staticmethod
     def extract_metrics_and_pdbs(zip_path, output_dir):
-        logging.info(f"Extracting metrics and PDBs from {zip_path}")
+        logger.info(f"Extracting metrics and PDBs from {zip_path}")
         all_results = []
         pdbs = {}
         
@@ -246,18 +250,18 @@ class LocalColabFold:
             pdb_files = [name for name in zip_ref.namelist() if name.endswith('.pdb')]
             seq_names = list(set([n.split('_unrelaxed_rank')[0] for n in pdb_files]))
             
-            logging.info(f"Found {len(seq_names)} sequence names in the zip file")
+            logger.info(f"Found {len(seq_names)} sequence names in the zip file")
             
             for seq_name in seq_names:
                 sequences = LocalColabFold.extract_sequences(zip_ref, seq_name)
                 binder_length = sequences['binder_length']
                 target_length = sequences['target_length']
                 
-                logging.info(f"Extracted sequences for {seq_name}: binder length {binder_length}, target length {target_length}")
+                logger.info(f"Extracted sequences for {seq_name}: binder length {binder_length}, target length {target_length}")
                 
                 scores = LocalColabFold.extract_scores(zip_ref, seq_name, binder_length)
                 
-                logging.info(f"Extracted {len(scores)} scores for {seq_name}")
+                logger.info(f"Extracted {len(scores)} scores for {seq_name}")
                 
                 for score in scores:
                     result = {
@@ -272,7 +276,7 @@ class LocalColabFold:
                         'pae_interaction': score['pae_interaction'],
                         'ptm': score['ptm'],
                         'seq_id': hash_seq(sequences['binder']),
-                        'mut_str': get_mutation_diff(sequences['binder'], EGFS),
+                        # 'mut_str': get_mutation_diff(sequences['binder'], EGFS),
                     }
                     all_results.append(result)
                     
@@ -283,11 +287,11 @@ class LocalColabFold:
                             pdb_content = pdb_file.read().decode('utf-8')
                             pdbs[f"{seq_name}_model_{score['model_number']}"] = pdb_content
                     
-                    logging.info(f"Extracted PDB content for {seq_name}_model_{score['model_number']}")
+                    logger.info(f"Extracted PDB content for {seq_name}_model_{score['model_number']}")
                     
                     result['pdb_content'] = pdb_content
         
-        logging.info(f"Extracted {len(all_results)} total results and {len(pdbs)} PDB files")
+        logger.info(f"Extracted {len(all_results)} total results and {len(pdbs)} PDB files")
         return all_results
         
 
@@ -310,7 +314,17 @@ def fold_and_extract(
     return result['results']
 
 @app.function(timeout=12800)
-def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEMPLATE_A3M_PATH, target_sequence: str = None, batch_size: int = 10, **kwargs):
+def parallel_fold_and_extract(
+    binder_sequences: dict, 
+    template_a3m_path: str = None, 
+    target_sequence: str = None, 
+    batch_size: int = 10,
+    **kwargs):
+    
+    if template_a3m_path is None:
+        template_a3m_path = TEMPLATE_A3M_PATH
+    
+    lcf = LocalColabFold()
     all_results = []
     
     # Prepare batches
@@ -321,7 +335,7 @@ def parallel_fold_and_extract(binder_sequences: dict, template_a3m_path: str=TEM
 
 
     all_results = []
-    for result in fold_and_extract.starmap(batches, kwargs=kwargs):
+    for result in lcf.fold.starmap(batches, kwargs=kwargs):
         all_results.extend(result)
     
     return all_results
@@ -353,3 +367,56 @@ def test():
         template_a3m_path=template_a3m_path,
         binder_sequences=binder_sequences
     )
+    
+@app.local_entrypoint()
+def manual_parallel_fold():
+    def mutate_seq(seq, position, new_aa):
+        return seq[:position-1] + new_aa + seq[position:]
+
+    def apply_mutation(seq, mutation_str):
+        new_aa = mutation_str[-1]
+        position = int(mutation_str[:-1])
+        return mutate_seq(seq, position, new_aa)
+
+    egfs = 'NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW'
+    seed = egfs
+    seed = 'PSYSGCPSSYDGYCGNGGVCMHIESLDSYTCQCVIGYSGDRVQTRDLRWT'
+    seed = 'ISYSACPLSYDGVCGNGGVCKHALSLDSYTCQCVWGYSGDRVQTRDLRYT'
+
+    mutations = [
+        # '5A',
+        # '6A',
+        
+        ]
+    for pos in range(7, 50):
+        mutations.append(f'{pos}A')
+    seqs = {}
+    for mutation in mutations:
+        seq = apply_mutation(seed, mutation)
+        seqs[hash_seq(seq)] = seq
+        
+    results = list(parallel_fold_and_extract.remote(binder_sequences=seqs, batch_size=3, num_recycle=1, num_models=1))
+    fold_df = pd.DataFrame(results)
+    fold_df['mut_str'] = fold_df['binder_sequence'].apply(get_mutation_diff, seq2=EGFS)
+    fold_df['seq_name'] = fold_df['binder_sequence'].apply(hash_seq)
+    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    fp = FOLD_RESULTS_DIR / f'fold_results_{now}.csv'
+    # save the fold_df
+    fold_df.to_csv(fp, index=False)
+    
+@app.local_entrypoint()
+def manual_parallel_fold_validate():
+    seed = 'ISYSACPLSYDGVCGNGGVCKHALSLDSYTCQCVWGYSGDRVQTRDLRYT'
+
+    seqs = {}
+    seqs[hash_seq(seed)] = seed
+        
+        
+    results = list(parallel_fold_and_extract.remote(binder_sequences=seqs, batch_size=3, num_recycle=3, num_models=5))
+    fold_df = pd.DataFrame(results)
+    fold_df['mut_str'] = fold_df['binder_sequence'].apply(get_mutation_diff, seq2=EGFS)
+    fold_df['seq_name'] = fold_df['binder_sequence'].apply(hash_seq)
+    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    fp = FOLD_RESULTS_DIR / f'fold_results_{now}.csv'
+    # save the fold_df
+    fold_df.to_csv(fp, index=False)

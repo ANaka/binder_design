@@ -4,7 +4,7 @@ from modal import App, Secret, gpu, Image, enter, method
 import logging
 from datetime import datetime
 from binder_design import DATA_DIR, EGFS, EGFR
-from binder_design.utils import get_mutation_diff
+from binder_design.utils import get_mutation_diff, hash_seq
 import time
 
 # Configure logging
@@ -212,7 +212,7 @@ class PepMLM:
             predicted_token_ids = top_k_indices.gather(-1, predicted_indices.unsqueeze(-1)).squeeze(-1)
 
             generated_binder = self.tokenizer.decode(predicted_token_ids, skip_special_tokens=True).replace(' ', '')
-            logger.info(f"Generated binder: {generated_binder}")
+            logger.debug(f"Generated binder: {generated_binder}")
 
             # Compute PPL for the generated binder
             ppl_value = self._compute_ppl_unmasked(protein_seq, generated_binder)
@@ -271,7 +271,8 @@ class PepMLM:
                 'binder': binder_seq,
                 'unmasked_ppl': original_ppl,
                 'mask_positions': '',
-                'mutation': ''
+                'mutation': '',
+                'seq_id': hash_seq(binder_seq)
             }]
             
             for _ in range(num_variations):
@@ -316,7 +317,8 @@ class PepMLM:
                     'binder': mutated_binder,
                     'unmasked_ppl': ppl_value,
                     'mask_positions': ','.join(map(str, mask_positions)),
-                    'mutation': get_mutation_diff(binder_seq, mutated_binder)
+                    'mutation': get_mutation_diff(binder_seq, mutated_binder),
+                    'seq_id': hash_seq(mutated_binder)
                 })
             
             all_mutated_binders.extend(mutated_binders)
@@ -372,7 +374,9 @@ def test_egfs_edit():
         'binder': [binder_seq],
         'unmasked_ppl': [original_ppl],
         'mask_positions': [''],
-        'mutation': ['']
+        'mutation': [''],
+        'seq_id': [hash_seq(binder_seq)]
+        
     })
     
     # Concatenate the original binder with the mutated binders
@@ -398,25 +402,25 @@ def parallel_edit_binders(binder_seqs, target_seq, frac_residues_to_mask=0.15, t
     
     return combined_results
 
-@app.function(timeout=12800)
-def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_mask=0.05, top_k=5, num_variations_per_binder=10, min_n_binder_seqs=2):
+# @app.function(timeout=12800)
+# def edit_binders_parallel(binder_seqs=None, target_seq=EGFR, frac_residues_to_mask=0.05, top_k=5, num_variations_per_binder=10, min_n_binder_seqs=2):
     
-    if binder_seqs is None:
-        binder_seqs = [EGFS]
+#     if binder_seqs is None:
+#         binder_seqs = [EGFS]
     
-    if len(binder_seqs) < min_n_binder_seqs:
-        # Multiply binder_seqs to meet the minimum requirement
-        multiplier = -(-min_n_binder_seqs // len(binder_seqs))  # Ceiling division
-        binder_seqs = binder_seqs * multiplier
+#     if len(binder_seqs) < min_n_binder_seqs:
+#         # Multiply binder_seqs to meet the minimum requirement
+#         multiplier = -(-min_n_binder_seqs // len(binder_seqs))  # Ceiling division
+#         binder_seqs = binder_seqs * multiplier
         
-        print(f"Expanded binder sequences from {len(binder_seqs) // multiplier} to {len(binder_seqs)} to meet minimum requirement.")
-    results = parallel_edit_binders.remote(binder_seqs, target_seq, frac_residues_to_mask, top_k, num_variations_per_binder)
+#         print(f"Expanded binder sequences from {len(binder_seqs) // multiplier} to {len(binder_seqs)} to meet minimum requirement.")
+#     results = parallel_edit_binders.remote(binder_seqs, target_seq, frac_residues_to_mask, top_k, num_variations_per_binder)
     
-    # Sort the results by perplexity
-    sorted_results = results.sort_values(by='ppl')
+#     # Sort the results by perplexity
+#     sorted_results = results.sort_values(by='ppl')
     
     
-    return sorted_results
+#     return sorted_results
 
 @app.local_entrypoint()
 def evolve_binders(
