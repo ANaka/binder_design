@@ -381,6 +381,7 @@ def manual_parallel_fold():
     egfs = 'NSYPGCPSSYDGYCLNGGVCMHIESLDSYTCNCVIGYSGDRCQTRDLRWW'
     seed = egfs
     seed = 'PSYSGCPSSYDGYCGNGGVCMHIESLDSYTCQCVIGYSGDRVQTRDLRWT'
+    seed = 'ISYSACPLSYDGVCGNGGVCKHALSLDSYTCQCVWGYSGDRVQTRDLRYT'
 
     mutations = [
         # '5A',
@@ -395,6 +396,23 @@ def manual_parallel_fold():
         seqs[hash_seq(seq)] = seq
         
     results = list(parallel_fold_and_extract.remote(binder_sequences=seqs, batch_size=3, num_recycle=1, num_models=1))
+    fold_df = pd.DataFrame(results)
+    fold_df['mut_str'] = fold_df['binder_sequence'].apply(get_mutation_diff, seq2=EGFS)
+    fold_df['seq_name'] = fold_df['binder_sequence'].apply(hash_seq)
+    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    fp = FOLD_RESULTS_DIR / f'fold_results_{now}.csv'
+    # save the fold_df
+    fold_df.to_csv(fp, index=False)
+    
+@app.local_entrypoint()
+def manual_parallel_fold_validate():
+    seed = 'ISYSACPLSYDGVCGNGGVCKHALSLDSYTCQCVWGYSGDRVQTRDLRYT'
+
+    seqs = {}
+    seqs[hash_seq(seed)] = seed
+        
+        
+    results = list(parallel_fold_and_extract.remote(binder_sequences=seqs, batch_size=3, num_recycle=3, num_models=5))
     fold_df = pd.DataFrame(results)
     fold_df['mut_str'] = fold_df['binder_sequence'].apply(get_mutation_diff, seq2=EGFS)
     fold_df['seq_name'] = fold_df['binder_sequence'].apply(hash_seq)
