@@ -1,6 +1,5 @@
 import hashlib
 from binder_design import PEPMLM_RESULTS_DIR, FOLD_RESULTS_DIR
-import pandas as pd
 import re
 
 def hash_seq(sequence):
@@ -42,7 +41,7 @@ def get_mutation_diff(seq1, seq2):
         raise ValueError("Sequences must be of equal length")
     
     mutations = []
-    for i, (aa1, aa2) in enumerate(zip(seq1, seq2)):
+    for i, (aa1, aa2) in enumerate(zip(seq2, seq1)):
         if aa1 != aa2:
             mutations.append(f"{aa1}{i+1}{aa2}")
     
@@ -68,11 +67,3 @@ def get_mlm_ids():
     mlm_df = get_mlm_results()
     return mlm_df['seq_id'].unique().tolist()
 
-def get_fold_results():
-    fold_csvs = list(FOLD_RESULTS_DIR.glob('*.csv'))
-    fold_df = pd.concat([pd.read_csv(csv) for csv in fold_csvs]).reset_index(drop=True)
-    return fold_df
-
-def get_folded_ids():
-    fold_df = get_fold_results()
-    return fold_df['seq_id'].unique().tolist()

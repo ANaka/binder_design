@@ -7,13 +7,22 @@ import logging
 from datetime import datetime
 from binder_design import (
     DATA_DIR, EGFS, EGFR, FOLD_RESULTS_DIR, PEPMLM_RESULTS_DIR, COLABFOLD_GPU_CONCURRENCY_LIMIT, TEMPLATE_A3M_PATH, EVO_PROT_GRAD_RESULTS_DIR)
-from binder_design.utils import get_mutation_diff, hash_seq, get_mlm_results, get_fold_results, get_folded_ids
+from binder_design.utils import get_mutation_diff, hash_seq, get_mlm_results
 import pandas as pd
 import re
 
 from modal_colabfold import app as colabfold_app
 from modal_pepmlm import app as pepmlm_app
 from modal_evoprotgrad import app as evoprotgrad_app
+
+def get_fold_results():
+    fold_csvs = list(FOLD_RESULTS_DIR.glob('*.csv'))
+    fold_df = pd.concat([pd.read_csv(csv) for csv in fold_csvs]).reset_index(drop=True)
+    return fold_df
+
+def get_folded_ids():
+    fold_df = get_fold_results()
+    return fold_df['seq_id'].unique().tolist()
 
 app = App(name='binder_sampling')
 app.include(colabfold_app)
@@ -197,20 +206,22 @@ def evolve_binders(
 def evoprotgrad_binders(
     init_binder_seqs=None,
     init_from_folded:bool=True,
-    init_from_folded_top_k:int=5,
+    init_from_folded_top_k:int=8,
     target_seq=EGFR, 
-    min_n_binder_seqs=10,
-    n_generations=4,
-    n_evoprotgrad_survivors=50,
-    n_colabfold_survivors=20,
+    min_n_binder_seqs=40,
+    n_generations=8,
+    n_evoprotgrad_survivors=320,
+    n_colabfold_survivors=160,
     select_from_all_folded:bool=True,
-    folded_top_k:int = 20,
-    n_new_seqs_to_return:int=100,
-    n_serial_chains_per_seq:int=10,
-    n_steps:int=20,
-    max_mutations:int=4,
+    folded_top_k:int = 160,
+    n_new_seqs_to_return:int=320,
+    n_serial_chains_per_seq:int=5,
+    n_steps:int=30,
+    max_mutations:int=7,
 ):
     from binder_design.utils import get_mutation_diff
+    import pandas as pd
+    import re
     logger.info("Starting evoprotgrad_binders function")
     if init_from_folded:
         init_df = get_fold_results().drop_duplicates(subset=['seq_id']).sort_values(by='pae_interaction', ascending=True)
@@ -255,6 +266,7 @@ def evoprotgrad_binders(
         )
         
         evoprotgrad_df = pd.DataFrame(evoprotgrad_results)
+        logger.info(f"returned {len(evoprotgrad_df)} sequences")
         
         # Save this generation's results
         save_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -272,6 +284,7 @@ def evoprotgrad_binders(
         already_folded = get_folded_ids()
         logger.info(f"Total N folded = {len(already_folded)} sequences")
         evoprotgrad_df = evoprotgrad_df[~evoprotgrad_df['seq_id'].isin(already_folded)]
+        logger.info(f"N evoprotgrad_df after filtering = {len(evoprotgrad_df)}")
         seqs_to_fold = evoprotgrad_df.head(n_evoprotgrad_survivors).set_index('seq_id')['binder_sequence'].to_dict()
 
         logger.info(f"Folding {len(seqs_to_fold)} sequences")
