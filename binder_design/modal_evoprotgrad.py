@@ -2,12 +2,21 @@ import os
 from modal import App, Secret, gpu, Image, enter, method
 import logging
 from datetime import datetime
-from binder_design import DATA_DIR, EGFS, EGFR, EVO_PROT_GRAD_RESULTS_DIR
-from binder_design.utils import get_mutation_diff, hash_seq, get_fold_results
+from binder_design import DATA_DIR, EGFS, EGFR, EVO_PROT_GRAD_RESULTS_DIR, FOLD_RESULTS_DIR
+from binder_design.utils import get_mutation_diff, hash_seq
 import pandas as pd
 from datetime import datetime
 
 import time
+
+def get_fold_results():
+    fold_csvs = list(FOLD_RESULTS_DIR.glob('*.csv'))
+    fold_df = pd.concat([pd.read_csv(csv) for csv in fold_csvs]).reset_index(drop=True)
+    return fold_df
+
+def get_folded_ids():
+    fold_df = get_fold_results()
+    return fold_df['seq_id'].unique().tolist()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +48,7 @@ with image.imports():
     image=image,
     gpu="a10g",
     # concurrency_limit=20,
-    # timeout=9600,
+    timeout=9600,
 )
 def train_and_sample_evo_prot_grad(
     input_seqs: list,
@@ -170,7 +179,12 @@ def train_and_sample_evo_prot_grad(
             for sequences, properties in train_loader:
                 inputs = tokenizer(sequences).to(device)
                 outputs = model(inputs)
-                train_predictions.extend(outputs.squeeze().cpu().tolist())
+                if outputs.dim() == 0:
+                    train_predictions.append(outputs.item())
+                elif outputs.dim() == 1 and len(outputs) == 1:
+                    train_predictions.append(outputs[0].item())
+                else:
+                    train_predictions.extend(outputs.squeeze().cpu().tolist())
                 train_actual_values.extend(properties.tolist())
         
         
@@ -181,7 +195,12 @@ def train_and_sample_evo_prot_grad(
             for sequences, properties in val_loader:
                 inputs = tokenizer(sequences).to(device)
                 outputs = model(inputs)
-                val_predictions.extend(outputs.squeeze().cpu().tolist())
+                if outputs.dim() == 0:
+                    val_predictions.append(outputs.item())
+                elif outputs.dim() == 1 and len(outputs) == 1:
+                    val_predictions.append(outputs[0].item())
+                else:
+                    val_predictions.extend(outputs.squeeze().cpu().tolist())
                 val_actual_values.extend(properties.tolist())
         
         
